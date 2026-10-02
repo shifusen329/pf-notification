@@ -1,16 +1,16 @@
-name: Sample PR Builder for SamplePlugin
+name: PR build for PfNotification
 
 on:
   pull_request:
     branches: [ master ]
 
+permissions:
+  contents: read
+
 jobs:
 
   build:
     runs-on: windows-2022
-
-    env:
-      Solution_Name: SamplePlugin
 
     steps:
     - name: Checkout
@@ -27,13 +27,15 @@ jobs:
         Expand-Archive -Force latest.zip "$env:AppData\XIVLauncher\addon\Hooks\dev"
 
     - name: Build with dotnet
-      run: dotnet build --configuration Release
+      run: dotnet build PfNotification.slnx --configuration Release
+
+    - name: Test
+      run: dotnet test tests/PfNotification.Tests --configuration Release --no-build
 
     - name: Store artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: SamplePlugin
-        path: .\SamplePlugin\bin\x64\Release\SamplePlugin\*
+        name: PfNotification
+        path: .\PfNotification\bin\x64\Release\PfNotification\*
         if-no-files-found: error
         retention-days: 1
-

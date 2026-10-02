@@ -2,3 +2,5 @@
 obj/
 bin/
 *.user
+# JetBrains IDEs (Rider, Android Studio): per-user settings and caches
+.idea/

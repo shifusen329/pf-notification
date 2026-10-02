@@ -1,0 +1,18 @@
+# ntfy server config, mounted read-only at /etc/ntfy/server.yml.
+# Reference: https://docs.ntfy.sh/config/
+
+base-url: "https://ntfy.shifusenproductions.com"
+listen-http: ":80"
+
+# nginx on 192.168.0.100 terminates TLS and forwards here. Without this, every
+# client looks like the proxy and they all share one rate limit.
+behind-proxy: true
+
+# Keep messages across restarts so the phone can catch up after reconnecting.
+cache-file: "/var/cache/ntfy/cache.db"
+cache-duration: "12h"
+
+# Nothing is readable or writable without an account or access token.
+auth-file: "/var/lib/ntfy/user.db"
+auth-default-access: "deny-all"
+enable-login: true

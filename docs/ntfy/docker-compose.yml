@@ -1,0 +1,28 @@
+# ntfy on the Docker host (192.168.0.113), deployed to ~/ntfy.
+# nginx on 192.168.0.100 proxies ntfy.shifusenproductions.com to port 8090
+# (see ../ntfy.conf).
+#
+#   scp docs/ntfy/docker-compose.yml docs/ntfy/server.yml administrator@192.168.0.113:~/ntfy/
+#   ssh administrator@192.168.0.113 "cd ~/ntfy && mkdir -p cache lib && docker compose up -d"
+
+services:
+  ntfy:
+    image: binwiederhier/ntfy:v2.28.0
+    container_name: ntfy
+    command: serve
+    user: "1000:1000"
+    environment:
+      - TZ=America/Chicago
+    volumes:
+      - ./server.yml:/etc/ntfy/server.yml:ro
+      - ./cache:/var/cache/ntfy
+      - ./lib:/var/lib/ntfy
+    ports:
+      - "8090:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --tries=1 http://localhost:80/v1/health -O - | grep -Eo '\"healthy\"\\s*:\\s*true' || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped

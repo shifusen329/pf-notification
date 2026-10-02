@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="PfNotification/PfNotification.csproj">
+    <Platform Project="x64" />
+  </Project>
+  <Project Path="tests/PfNotification.Tests/PfNotification.Tests.csproj" />
+</Solution>
