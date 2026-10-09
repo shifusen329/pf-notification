@@ -28,6 +28,12 @@ public class Configuration : IPluginConfiguration
     /// <summary>ntfy priority, 1 (min) to 5 (max). 4 ("high") vibrates and pops up on most phones.</summary>
     public int Priority { get; set; } = 4;
 
+    /// <summary>Also notify when a member joins or leaves (outside duties), e.g. "WHM joined".</summary>
+    public bool JoinLeaveAlerts { get; set; } = true;
+
+    /// <summary>ntfy priority for join/leave alerts. 2 ("low") shows them without sound or vibration.</summary>
+    public int JoinLeavePriority { get; set; } = 2;
+
     /// <summary>Party size that counts as full: 8 for a full party, 4 for a light party.</summary>
     public int TargetSize { get; set; } = 8;
 

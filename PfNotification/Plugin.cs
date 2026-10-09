@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Dalamud.Game.ClientState.Conditions;
@@ -20,8 +21,15 @@ namespace PfNotification;
 /// <summary>Live state for the window: published by the framework thread, read by Draw.</summary>
 public sealed record PluginStatus(PartySnapshot Party, FillState State, int Target);
 
+public enum SendKind
+{
+    Test,
+    Full,
+    Change,
+}
+
 /// <summary>Outcome of the most recent send.</summary>
-public sealed record SendReport(DateTime At, NtfyResult Result, bool IsTest);
+public sealed record SendReport(DateTime At, NtfyResult Result, SendKind Kind);
 
 /// <summary>
 /// Watches the party on the framework thread and sends one ntfy alert when it fills. Passive-only (see
@@ -46,7 +54,12 @@ public sealed class Plugin : IDalamudPlugin
     private const long PollIntervalMs = 250;
     private const long AutoSendCooldownMs = 60_000;
 
+    // A join that completes the party is covered by the fill alert, which fires within this window of it.
+    private const long FillOverlapMs = 5_000;
+
     private static readonly string[] AlertTags = ["busts_in_silhouette"];
+    private static readonly string[] JoinTags = ["heavy_plus_sign"];
+    private static readonly string[] LeaveTags = ["heavy_minus_sign"];
 
     // In a duty or zoning, party data is in flux (Duty Finder parties, cross-realm to party-list switching).
     private static readonly ConditionFlag[] FrozenFlags =
@@ -59,17 +72,19 @@ public sealed class Plugin : IDalamudPlugin
     ];
 
     private static readonly string Usage =
-        $"Usage: {CommandName} [test | on | off | status | target <{Configuration.MinTargetSize}-{Configuration.MaxTargetSize}>]";
+        $"Usage: {CommandName} [test | on | off | joins on|off | status | target <{Configuration.MinTargetSize}-{Configuration.MaxTargetSize}>]";
 
     public readonly WindowSystem WindowSystem = new("PfNotification");
 
     private readonly FillDetector detector = new();
+    private readonly MemberTracker memberTracker = new();
     private readonly CancellationTokenSource lifetime = new();
     private readonly NtfyClient ntfy;
     private readonly DiagnosticLogger diagnostics;
 
     private long nextPollAt;
     private long lastAutoSendAt = -AutoSendCooldownMs;
+    private long lastFillAt = -FillOverlapMs;
     private PartySnapshot lastSnapshot;
     private volatile bool disposed;
     private volatile bool testRunning;
@@ -90,7 +105,8 @@ public sealed class Plugin : IDalamudPlugin
         if (!CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
             HelpMessage = $"Open PF Notification. \"{CommandName} test\" sends a test alert, \"on\"/\"off\" toggles alerts, " +
-                          $"\"status\" shows the party state, \"target 4\" sets the full size.",
+                          $"\"joins on\"/\"joins off\" toggles join/leave alerts, \"status\" shows the party state, " +
+                          $"\"target 4\" sets the full size.",
         }))
         {
             Log.Warning("Could not register {Command}: another plugin already owns it", CommandName);
@@ -150,7 +166,7 @@ public sealed class Plugin : IDalamudPlugin
                 $"Test from {CommandName}. Party alerts will arrive like this.",
                 Configuration.Priority,
                 AlertTags),
-            true);
+            SendKind.Test);
     }
 
     public void SetDiagnostics(bool enabled)
@@ -198,6 +214,8 @@ public sealed class Plugin : IDalamudPlugin
         var frozen = Condition.Any(FrozenFlags);
         var target = Configuration.GetTargetSize();
         var decision = detector.Update(new FillInput(now, snapshot.Count, target, loggedIn, frozen));
+        var others = loggedIn ? PartyReader.ReadOthers(PartyList, PlayerState.ContentId) : [];
+        var changes = memberTracker.Update(new MemberInput(now, others, loggedIn, frozen));
 
         if (snapshot != lastSnapshot)
         {
@@ -210,12 +228,48 @@ public sealed class Plugin : IDalamudPlugin
         switch (decision)
         {
             case FillDecision.Fire:
+                lastFillAt = now;
                 OnPartyFilled(now, snapshot, target);
                 break;
             case FillDecision.SuppressedJoinedFull:
                 Log.Information("Joined a full party ({Count}/{Target}); no alert", snapshot.Count, target);
                 break;
         }
+
+        if (changes is not null)
+        {
+            OnMembersChanged(now, changes, snapshot, target);
+        }
+    }
+
+    private void OnMembersChanged(long now, MemberChanges changes, PartySnapshot snapshot, int target)
+    {
+        var classJobs = DataManager.GetExcelSheet<ClassJob>();
+        var joined = changes.Joined.Select(m => PartyReader.JobAbbreviation(classJobs, m.ClassJobId)).ToList();
+        var left = changes.Left.Select(m => PartyReader.JobAbbreviation(classJobs, m.ClassJobId)).ToList();
+        var title = AlertText.ChangeTitle(joined, left);
+        Log.Information("{Change} ({Count}/{Target})", title, snapshot.Count, target);
+
+        if (!Configuration.Enabled || !Configuration.JoinLeaveAlerts)
+        {
+            return;
+        }
+
+        // The member who completed the party is announced by the fill alert, which fires around the same tick.
+        var completesParty = (changes.Left.Count == 0) && (snapshot.Count >= target);
+        if (completesParty && ((detector.State == FillState.Confirming) || ((now - lastFillAt) < FillOverlapMs)))
+        {
+            return;
+        }
+
+        var roles = PartyReader.ReadRoles(PartyList, classJobs, PlayerState.ContentId, PlayerState.ClassJob.RowId);
+        StartSend(
+            new NtfyMessage(
+                title,
+                AlertText.Summary(snapshot.Count, target, roles),
+                Configuration.JoinLeavePriority,
+                (changes.Joined.Count > 0) ? JoinTags : LeaveTags),
+            SendKind.Change);
     }
 
     private void OnPartyFilled(long now, PartySnapshot snapshot, int target)
@@ -235,11 +289,11 @@ public sealed class Plugin : IDalamudPlugin
         lastAutoSendAt = now;
         var roles = PartyReader.ReadRoles(PartyList, DataManager.GetExcelSheet<ClassJob>(), PlayerState.ContentId, PlayerState.ClassJob.RowId);
         Log.Information("Party full ({Count}/{Target}: {Roles}); sending alert", snapshot.Count, target, roles.ToString());
-        StartSend(new NtfyMessage("Party full", $"{snapshot.Count}/{target}: {roles}", Configuration.Priority, AlertTags), false);
+        StartSend(new NtfyMessage(AlertText.FullTitle, AlertText.Summary(snapshot.Count, target, roles), Configuration.Priority, AlertTags), SendKind.Full);
     }
 
     /// <summary>Publish off the framework thread, then report back on it. Settings are captured now.</summary>
-    private void StartSend(NtfyMessage message, bool isTest)
+    private void StartSend(NtfyMessage message, SendKind kind)
     {
         var settings = Configuration.ToNtfySettings();
         var ct = lifetime.Token;
@@ -256,7 +310,7 @@ public sealed class Plugin : IDalamudPlugin
             }
             finally
             {
-                if (isTest)
+                if (kind == SendKind.Test)
                 {
                     testRunning = false;
                 }
@@ -267,28 +321,36 @@ public sealed class Plugin : IDalamudPlugin
                 return;
             }
 
-            lastSend = new SendReport(DateTime.Now, result, isTest);
+            lastSend = new SendReport(DateTime.Now, result, kind);
             if (result.Ok)
             {
-                Log.Information("{Kind} sent (attempt {Attempts})", isTest ? "Test notification" : "Alert", result.Attempts);
+                Log.Information("{Kind} sent (attempt {Attempts})", Describe(kind), result.Attempts);
             }
             else
             {
-                Log.Warning("{Kind} failed: {Outcome} after {Attempts} attempt(s): {Detail}", isTest ? "Test notification" : "Alert", result.Outcome, result.Attempts, result.Detail);
+                Log.Warning("{Kind} failed: {Outcome} after {Attempts} attempt(s): {Detail}", Describe(kind), result.Outcome, result.Attempts, result.Detail);
             }
 
-            _ = Framework.RunOnFrameworkThread(() => ReportResult(result, isTest));
+            _ = Framework.RunOnFrameworkThread(() => ReportResult(result, kind));
         });
     }
 
-    private void ReportResult(NtfyResult result, bool isTest)
+    public static string Describe(SendKind kind) => kind switch
     {
-        if (disposed)
+        SendKind.Test => "Test notification",
+        SendKind.Full => "Party-full alert",
+        _ => "Join/leave alert",
+    };
+
+    private void ReportResult(NtfyResult result, SendKind kind)
+    {
+        // Join/leave alerts can come in bursts while recruiting; only interrupt the player when one fails.
+        if (disposed || (result.Ok && (kind == SendKind.Change)))
         {
             return;
         }
 
-        var what = isTest ? "Test notification" : "Party-full alert";
+        var what = Describe(kind);
         var text = result.Ok ? $"{what} sent to your phone." : $"{what} failed: {result.Detail}";
         NotificationManager.AddNotification(new Notification
         {
@@ -333,6 +395,19 @@ public sealed class Plugin : IDalamudPlugin
                 Configuration.Save();
                 ChatGui.Print($"Alerts {sub}.", ChatTag);
                 return;
+            case "joins":
+                if ((parts.Length == 2) && (parts[1].ToLowerInvariant() is "on" or "off"))
+                {
+                    Configuration.JoinLeaveAlerts = parts[1].Equals("on", StringComparison.OrdinalIgnoreCase);
+                    Configuration.Save();
+                    ChatGui.Print($"Join/leave alerts {(Configuration.JoinLeaveAlerts ? "on" : "off")}.", ChatTag);
+                }
+                else
+                {
+                    ChatGui.PrintError(Usage, ChatTag);
+                }
+
+                return;
             case "status":
                 ChatGui.Print(DescribeStatus(), ChatTag);
                 return;
@@ -358,7 +433,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private string DescribeStatus()
     {
-        var alerts = Configuration.Enabled ? "on" : "off";
+        var alerts = Configuration.Enabled ? (Configuration.JoinLeaveAlerts ? "on (with joins/leaves)" : "on (party full only)") : "off";
         var problem = Configuration.GetConfigProblem();
         var setup = (problem is null) ? string.Empty : $" Not configured: {problem}.";
         if (status is not { } s)

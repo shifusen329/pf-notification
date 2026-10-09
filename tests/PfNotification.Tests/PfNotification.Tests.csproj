@@ -13,6 +13,8 @@
 
   <ItemGroup>
     <Compile Include="..\..\PfNotification\Detection\FillDetector.cs" Link="Linked\FillDetector.cs" />
+    <Compile Include="..\..\PfNotification\Detection\MemberTracker.cs" Link="Linked\MemberTracker.cs" />
+    <Compile Include="..\..\PfNotification\Party\AlertText.cs" Link="Linked\AlertText.cs" />
     <Compile Include="..\..\PfNotification\Ntfy\NtfyClient.cs" Link="Linked\NtfyClient.cs" />
     <Compile Include="..\..\PfNotification\Party\RoleCounts.cs" Link="Linked\RoleCounts.cs" />
   </ItemGroup>

@@ -1,7 +1,9 @@
+using System.Collections.Generic;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.UI.Info;
 using Lumina.Excel;
 using Lumina.Excel.Sheets;
+using PfNotification.Detection;
 
 namespace PfNotification.Party;
 
@@ -54,6 +56,46 @@ public static unsafe class PartyReader
         var addSelf = !selfListed && (selfContentId != 0);
         return new PartySnapshot(addSelf ? (count + 1) : count, PartySource.CrossRealm, addSelf);
     }
+
+    /// <summary>Every party member except the local player, for join/leave tracking.</summary>
+    public static List<PartyMember> ReadOthers(IPartyList partyList, ulong selfContentId)
+    {
+        var others = new List<PartyMember>(8);
+        if (partyList.Length > 0)
+        {
+            foreach (var member in partyList)
+            {
+                var contentId = (member is null) ? 0 : (ulong)member.ContentId;
+                if ((contentId != 0) && (contentId != selfContentId))
+                {
+                    others.Add(new PartyMember(contentId, member!.ClassJob.RowId));
+                }
+            }
+
+            return others;
+        }
+
+        if (!TryGetLocalGroup(out var proxy, out var index))
+        {
+            return others;
+        }
+
+        ref var group = ref proxy->CrossRealmGroups[index];
+        for (var i = 0; i < group.GroupMemberCount; i++)
+        {
+            ref var member = ref group.GroupMembers[i];
+            if ((member.ContentId != 0) && (member.ContentId != selfContentId))
+            {
+                others.Add(new PartyMember(member.ContentId, member.ClassJobId));
+            }
+        }
+
+        return others;
+    }
+
+    /// <summary>Job abbreviation such as "WHM", or empty when unknown.</summary>
+    public static string JobAbbreviation(ExcelSheet<ClassJob> classJobs, uint classJobId) =>
+        classJobs.TryGetRow(classJobId, out var row) ? row.Abbreviation.ExtractText() : string.Empty;
 
     /// <summary>Role tally of the current party. Only called when an alert fires.</summary>
     public static RoleCounts ReadRoles(IPartyList partyList, ExcelSheet<ClassJob> classJobs, ulong selfContentId, uint selfClassJobId)

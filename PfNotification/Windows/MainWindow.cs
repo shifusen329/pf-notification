@@ -70,7 +70,7 @@ public sealed class MainWindow : Window, IDisposable
 
         if (plugin.LastSend is { } last)
         {
-            ImGui.TextUnformatted($"Last {(last.IsTest ? "test" : "alert")} at {last.At:HH:mm:ss}:");
+            ImGui.TextUnformatted($"Last send ({Plugin.Describe(last.Kind).ToLowerInvariant()}) at {last.At:HH:mm:ss}:");
             ImGui.SameLine();
             if (last.Result.Ok)
             {
@@ -127,7 +127,7 @@ public sealed class MainWindow : Window, IDisposable
         }
 
         var priority = configuration.Priority;
-        if (ImGui.SliderInt("Priority", ref priority, 1, 5))
+        if (ImGui.SliderInt("Party-full priority", ref priority, 1, 5))
         {
             configuration.Priority = priority;
             configuration.Save();
@@ -171,6 +171,31 @@ public sealed class MainWindow : Window, IDisposable
 
         ImGui.SameLine();
         ImGuiComponents.HelpMarker("8 for a full party, 4 for a light party. Also /pfnotify target <n>.");
+
+        var joinLeave = configuration.JoinLeaveAlerts;
+        if (ImGui.Checkbox("Notify when members join or leave", ref joinLeave))
+        {
+            configuration.JoinLeaveAlerts = joinLeave;
+            configuration.Save();
+        }
+
+        ImGui.SameLine();
+        ImGuiComponents.HelpMarker(
+            "e.g. \"WHM joined\" with the new count and roles. Jobs only, never names.\n" +
+            "Not sent in duties, or when you join or leave a party yourself. Also /pfnotify joins on|off.");
+
+        using (ImRaii.Disabled(!configuration.JoinLeaveAlerts))
+        {
+            var joinLeavePriority = configuration.JoinLeavePriority;
+            if (ImGui.SliderInt("Join/leave priority", ref joinLeavePriority, 1, 5))
+            {
+                configuration.JoinLeavePriority = joinLeavePriority;
+                configuration.Save();
+            }
+        }
+
+        ImGui.SameLine();
+        ImGuiComponents.HelpMarker("2 (low) shows them without sound or vibration; the party-full alert keeps its own priority.");
 
         var diagnostics = configuration.DiagnosticLogging;
         if (ImGui.Checkbox("Diagnostic logging (/xllog)", ref diagnostics))
