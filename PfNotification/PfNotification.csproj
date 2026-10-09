@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
-    <Version>0.1.0.0</Version>
+    <Version>0.0.1.0</Version>
     <!-- Manifest fields (see https://github.com/goatcorp/DalamudPackager/blob/827d88dc/DalamudPackager/DalamudPackager.cs#L420) -->
     <Author>shifusen329</Author>
     <Name>PF Notification</Name>
-    <Punchline>Phone notification when your Party Finder party fills (private).</Punchline>
-    <Description>Watches your party and sends a notification to your phone through a self-hosted ntfy server when it reaches full size, so you can step away while recruiting.
+    <Punchline>Phone notification when your Party Finder party fills, or members join or leave.</Punchline>
+    <Description>Watches your party and sends a notification to your phone through a self-hosted ntfy server when it reaches full size, and optionally when members join or leave, so you can step away while recruiting.
 Read-only: it only observes your own client and never sends anything to the game servers.
-Private plugin for FC members; not intended for the official repository.</Description>
+Needs an ntfy topic and access token; set them with /pfnotify. Alpha, for FC members; not intended for the official repository.</Description>
     <RepoUrl>https://github.com/shifusen329/pf-notification</RepoUrl>
     <Tags>party;partyfinder;notification</Tags>
   </PropertyGroup>

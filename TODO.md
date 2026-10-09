@@ -6,8 +6,8 @@
 - [x] Create the `administrator` account and the `pf-plugin` account (write-only on `pf-alerts`) with its access token
 - [x] Deploy `docs/ntfy.conf` on the reverse proxy and run Certbot
 - [ ] Check `https://ntfy.shifusenproductions.com/v1/health` from outside the LAN (phone on mobile data)
-- [ ] Add the DNS A record for `plugins.shifusenproductions.com`, then deploy `docs/plugins.conf` and run Certbot
-- [ ] First release: `pwsh tools/publish.ps1`
+- [x] First release, 0.0.1: a GitHub release, listed in raid-replay's `repo.json`
+- [ ] Decide whether to keep the self-hosted plugin repository alternative (`docs/plugins.conf`, `tools/publish.ps1`); releases now go through GitHub
 - [ ] Optional hardening: let only the reverse proxy reach ntfy's port 8090 on .113. Docker bypasses ufw, so this needs a `DOCKER-USER` rule. Today any LAN client can call ntfy directly over HTTP; access control still applies, but such a client can spoof `X-Forwarded-For` to dodge rate limits.
 
 ## Phone
@@ -25,7 +25,8 @@ Everything here must follow the passive-only rule in `docs/dalamud-api.md`: obse
 - [x] Settings window with a "Send test notification" button
 - [x] Send off the game thread with a timeout and retries; report failures instead of throwing
 - [x] Notify once per fill; re-arm after a slot stays open for 10 s
-- [x] Unit tests for the detector, the ntfy client and the role summary
+- [x] Join and leave alerts ("WHM joined"), low priority by default, with `/pfnotify joins on|off`
+- [x] Unit tests for the fill detector, the member tracker, the ntfy client and the alert text
 - [ ] In-game verification with diagnostic logging on:
   - cross-world listing fills
   - duty entry and exit
@@ -33,6 +34,7 @@ Everything here must follow the passive-only rule in `docs/dalamud-api.md`: obse
   - joining as the last member
   - slot refill
   - `target 4`
+  - join and leave alerts while hosting (one per member, none in duties, none when you join someone's party, no duplicate when the last member fills the party)
 - [ ] From the diagnostic log, confirm the cross-realm count includes you and the `ClassJob.Role` values (1 tank, 2/3 DPS, 4 healer)
 - [ ] Record the "recruitment complete" `LogMessageId`, then add it as a second trigger, de-duplicated with the same latch
 
