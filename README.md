@@ -3,7 +3,7 @@
 Get a notification on your phone when your FINAL FANTASY XIV Party Finder party fills, so you can step away from the PC while recruiting.
 
 > **Status:**
-> - **Plugin:** 0.1.0 (alpha), unit-tested, not yet verified in-game. Installable from the Raid Replay plugin repository.
+> - **Plugin:** 0.1.0 (alpha), unit-tested, not yet verified in-game. Installable from the AnoMech plugin repository.
 > - **ntfy server:** live.
 > - **Mobile app:** planned.
 >
@@ -124,9 +124,9 @@ The plugin is written to `PfNotification/bin/x64/Release/PfNotification.dll` (or
 
 ### Installing it as an FC mate
 
-PF Notification is listed in the same Dalamud repository as [Raid Replay](https://github.com/shifusen329/raid-replay):
+PF Notification is listed in the [AnoMech](https://github.com/shifusen329/AnoMech) Dalamud repository, together with AnoMech and [Raid Replay](https://github.com/shifusen329/raid-replay):
 
-1. In `/xlsettings` > **Experimental** > **Custom Plugin Repositories**, add `https://raw.githubusercontent.com/shifusen329/raid-replay/master/repo.json`, tick it, and save. If you already use Raid Replay, it's already there.
+1. In `/xlsettings` > **Experimental** > **Custom Plugin Repositories**, add `https://raw.githubusercontent.com/shifusen329/AnoMech/master/repo.json`, tick it, and save. If you already use AnoMech or Raid Replay from that repository, it's already there.
 2. Install **PF Notification** from `/xlplugins`. Updates arrive automatically.
 3. Ask for an ntfy account (see [Adding an FC mate](#adding-an-fc-mate)). Then set the topic and token in `/pfnotify`.
 
@@ -138,13 +138,13 @@ Releases, with their source, are on [GitHub](https://github.com/shifusen329/pf-n
 2. Build and test: `dotnet build PfNotification.slnx -c Release` and `dotnet test tests/PfNotification.Tests -c Release`.
 3. Commit and push.
 4. Create the GitHub release: `gh release create vX.Y.Z PfNotification/bin/x64/Release/PfNotification/latest.zip --prerelease --title "PF Notification X.Y.Z (alpha)"`. Use the new changelog section as its notes.
-5. In `../raid-replay/repo.json`, update the PF Notification entry:
+5. In `../AnoMech/repo.json`, update the PF Notification entry:
    * `AssemblyVersion` and `TestingAssemblyVersion`
    * the three `DownloadLink*` URLs (`.../releases/download/vX.Y.Z/latest.zip`)
    * `LastUpdate`
    * `Changelog`
 
-   Then commit that file alone and push raid-replay.
+   Then commit that file alone and push AnoMech. Dalamud fetches the listing from its `master` branch.
 
 `tools/publish.ps1` and `docs/plugins.conf` are an unused alternative: a self-hosted repository on `plugins.shifusenproductions.com`.
 
