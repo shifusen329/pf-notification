@@ -7,6 +7,8 @@ using Dalamud.Interface.Components;
 using Dalamud.Interface.Utility;
 using Dalamud.Interface.Utility.Raii;
 using Dalamud.Interface.Windowing;
+using PfNotification.Ntfy;
+using PfNotification.RemoteChat;
 
 namespace PfNotification.Windows;
 
@@ -23,7 +25,7 @@ public sealed class MainWindow : Window, IDisposable
         this.plugin = plugin;
         configuration = plugin.Configuration;
         Flags = ImGuiWindowFlags.NoCollapse;
-        Size = new Vector2(480, 440) * ImGuiHelpers.GlobalScale;
+        Size = new Vector2(500, 700) * ImGuiHelpers.GlobalScale;
         SizeCondition = ImGuiCond.FirstUseEver;
     }
 
@@ -36,6 +38,11 @@ public sealed class MainWindow : Window, IDisposable
         DrawDelivery();
         Section();
         DrawDetection();
+        Section();
+        DrawRemoteChat();
+        ImGui.Spacing();
+        ImGui.TextDisabled("Passive by default: watches your own client and never sends anything to the game servers.");
+        ImGui.TextDisabled("Remote party chat is the one exception, and is off unless you enable it above.");
     }
 
     private static void Section()
@@ -197,13 +204,105 @@ public sealed class MainWindow : Window, IDisposable
         ImGui.SameLine();
         ImGuiComponents.HelpMarker("2 (low) shows them without sound or vibration; the party-full alert keeps its own priority.");
 
+        var dutyPop = configuration.DutyPopAlerts;
+        if (ImGui.Checkbox("Notify when a duty pops", ref dutyPop))
+        {
+            configuration.DutyPopAlerts = dutyPop;
+            configuration.Save();
+        }
+
+        ImGui.SameLine();
+        ImGuiComponents.HelpMarker(
+            "Duty Finder and roulettes: \"Duty ready\" with the duty's name, so you can get back within the 45 s accept window.\n" +
+            "Each re-pop after someone declines alerts again. Also /pfnotify duty on|off.");
+
+        using (ImRaii.Disabled(!configuration.DutyPopAlerts))
+        {
+            var dutyPriority = configuration.DutyPopPriority;
+            if (ImGui.SliderInt("Duty-ready priority", ref dutyPriority, 1, 5))
+            {
+                configuration.DutyPopPriority = dutyPriority;
+                configuration.Save();
+            }
+        }
+
+        ImGui.SameLine();
+        ImGuiComponents.HelpMarker("5 (max) is urgent: it gets through Do Not Disturb on most phones.");
+
         var diagnostics = configuration.DiagnosticLogging;
         if (ImGui.Checkbox("Diagnostic logging (/xllog)", ref diagnostics))
         {
             plugin.SetDiagnostics(diagnostics);
         }
+    }
 
-        ImGui.Spacing();
-        ImGui.TextDisabled("Read-only: watches your own client and never sends anything to the game servers.");
+    private void DrawRemoteChat()
+    {
+        ImGui.TextUnformatted("Remote party chat (phone → game)");
+        ImGui.SameLine();
+        ImGuiComponents.HelpMarker(
+            "Messages you publish to the chat topic are posted to party chat as \"/p <text>\" by your client.\n" +
+            "Server side, your plugin token needs read access to that topic (see README). Send from the ntfy web app:\n" +
+            "open the server in your phone's browser, log in, open the chat topic and type in the box at the bottom.\n" +
+            "One line, no commands, 500 bytes max, at most one message every 2 s and 10 a minute. Messages older than\n" +
+            "60 s are dropped, so nothing typed while the game was closed is ever posted. Also /pfnotify chat on|off.");
+
+        ImGui.TextColored(
+            ImGuiColors.DalamudYellow,
+            "Not passive: when on, anything published to the chat topic is spoken by your character in party chat.");
+        ImGui.TextColored(ImGuiColors.DalamudYellow, "Anyone who can publish to that topic can speak as you.");
+
+        var problem = configuration.GetRemoteChatProblem();
+        using (ImRaii.Disabled((problem is not null) && !configuration.RemoteChatEnabled))
+        {
+            var enabled = configuration.RemoteChatEnabled;
+            if (ImGui.Checkbox("Enable remote party chat", ref enabled))
+            {
+                configuration.RemoteChatEnabled = enabled;
+                configuration.Save();
+            }
+        }
+
+        var chatTopic = configuration.RemoteChatTopic;
+        var alerts = configuration.Topic.Trim();
+        var hint = ((alerts.Length > 0) ? alerts : "pf-alerts") + Configuration.ChatTopicSuffix;
+        if (ImGui.InputTextWithHint("Chat topic", hint, ref chatTopic, 64))
+        {
+            configuration.RemoteChatTopic = chatTopic.Trim();
+            configuration.Save();
+        }
+
+        ImGui.SameLine();
+        ImGuiComponents.HelpMarker("Leave empty to use the alerts topic with \"-chat\" added. It must not be the alerts topic itself.");
+
+        if (problem is not null)
+        {
+            ImGui.TextColored(ImGuiColors.DalamudYellow, $"Can't start: {problem}.");
+        }
+
+        ImGui.TextUnformatted("Stream:");
+        ImGui.SameLine();
+        if (!configuration.RemoteChatEnabled)
+        {
+            ImGui.TextDisabled("off");
+        }
+        else
+        {
+            var status = plugin.RemoteChatStatus;
+            var colour = status?.State switch
+            {
+                SubscriberState.Connected => ImGuiColors.HealerGreen,
+                SubscriberState.AuthRejected or SubscriberState.Forbidden or SubscriberState.Failed => ImGuiColors.DalamudRed,
+                null or SubscriberState.Stopped or SubscriberState.Connecting => ImGuiColors.DalamudGrey,
+                _ => ImGuiColors.DalamudYellow,
+            };
+            ImGui.TextColored(colour, RemoteChatService.Describe(status));
+        }
+
+        if (plugin.LastRemoteChat is { } last)
+        {
+            var outcome = (last.Verdict == RemoteChatVerdict.Accept) ? "sent" : $"rejected ({last.Reason})";
+            ImGui.TextUnformatted($"Last message at {last.At:HH:mm:ss}: {outcome}: {last.Text}");
+        }
     }
 }

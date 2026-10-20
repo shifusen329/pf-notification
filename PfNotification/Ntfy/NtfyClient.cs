@@ -197,7 +197,7 @@ public sealed class NtfyClient : IDisposable
     }
 
     /// <summary>ntfy errors are JSON like <c>{"code":40101,"http":401,"error":"unauthorized"}</c>.</summary>
-    private static async Task<string> ReadErrorAsync(HttpResponseMessage resp, CancellationToken ct)
+    internal static async Task<string> ReadErrorAsync(HttpResponseMessage resp, CancellationToken ct)
     {
         try
         {
@@ -216,7 +216,7 @@ public sealed class NtfyClient : IDisposable
         return resp.ReasonPhrase ?? "error";
     }
 
-    private static TimeSpan? RetryAfter(HttpResponseMessage resp)
+    internal static TimeSpan? RetryAfter(HttpResponseMessage resp)
     {
         var header = resp.Headers.RetryAfter;
         var wait = header?.Delta ?? ((header?.Date is { } date) ? date - DateTimeOffset.UtcNow : (TimeSpan?)null);

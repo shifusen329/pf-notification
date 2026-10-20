@@ -51,6 +51,7 @@ ntfy can't send APNs pushes to a third-party app; only the official ntfy app get
 2. **Alerts list:** recent messages from `GET /<topic>/json?poll=1&since=12h`, newest first, with pull to refresh.
 3. **Delivery status:** connected or registered, the last message received, and a "Send test" button that publishes to the topic. This works for mates, whose token is read-write; your `pf-plugin` token is write-only, so you'd use your own account's token.
 4. **Settings:** notification sound, and the time-sensitive option on iOS.
+5. **Remote party chat:** a compose box that publishes to the user's chat topic (`pf-<name>-chat`). The plugin posts the text to party chat and the "Sent to party" or "Not sent" confirmation arrives on the alerts topic like any other message. Until the app exists, the ntfy web app's message box does the same job.
 
 Shared code (models, ntfy API client, settings storage, SwiftUI screens) lives once in Swift. Only delivery is platform-specific.
 

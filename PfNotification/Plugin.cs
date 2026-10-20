@@ -14,6 +14,7 @@ using PfNotification.Detection;
 using PfNotification.Diagnostics;
 using PfNotification.Ntfy;
 using PfNotification.Party;
+using PfNotification.RemoteChat;
 using PfNotification.Windows;
 
 namespace PfNotification;
@@ -26,14 +27,18 @@ public enum SendKind
     Test,
     Full,
     Change,
+    DutyPop,
+    ChatFeedback,
 }
 
 /// <summary>Outcome of the most recent send.</summary>
 public sealed record SendReport(DateTime At, NtfyResult Result, SendKind Kind);
 
 /// <summary>
-/// Watches the party on the framework thread and sends one ntfy alert when it fills. Passive-only (see
-/// docs/dalamud-api.md): it reads client state and prints locally, and never sends anything to the game servers.
+/// Watches the party on the framework thread and sends ntfy alerts when it fills, members come and go, or a duty pops.
+/// Passive by default (see docs/dalamud-api.md): it reads client state and prints locally, and never sends anything to
+/// the game servers. The one exception is remote party chat, which is off unless the player turns it on; see
+/// <see cref="RemoteChatService"/>.
 /// </summary>
 public sealed class Plugin : IDalamudPlugin
 {
@@ -49,10 +54,12 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static INotificationManager NotificationManager { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
 
+    internal const string ChatTag = "PF Notification";
+
     private const string CommandName = "/pfnotify";
-    private const string ChatTag = "PF Notification";
     private const long PollIntervalMs = 250;
     private const long AutoSendCooldownMs = 60_000;
+    private const long DutyPopDebounceMs = 10_000;
 
     // A join that completes the party is covered by the fill alert, which fires within this window of it.
     private const long FillOverlapMs = 5_000;
@@ -60,6 +67,7 @@ public sealed class Plugin : IDalamudPlugin
     private static readonly string[] AlertTags = ["busts_in_silhouette"];
     private static readonly string[] JoinTags = ["heavy_plus_sign"];
     private static readonly string[] LeaveTags = ["heavy_minus_sign"];
+    private static readonly string[] DutyTags = ["bell"];
 
     // In a duty or zoning, party data is in flux (Duty Finder parties, cross-realm to party-list switching).
     private static readonly ConditionFlag[] FrozenFlags =
@@ -71,8 +79,15 @@ public sealed class Plugin : IDalamudPlugin
         ConditionFlag.BetweenAreas51,
     ];
 
+    // Party chat works inside duties, so remote chat only waits while actually zoning.
+    private static readonly ConditionFlag[] ZoningFlags =
+    [
+        ConditionFlag.BetweenAreas,
+        ConditionFlag.BetweenAreas51,
+    ];
+
     private static readonly string Usage =
-        $"Usage: {CommandName} [test | on | off | joins on|off | status | target <{Configuration.MinTargetSize}-{Configuration.MaxTargetSize}>]";
+        $"Usage: {CommandName} [test | on | off | joins on|off | duty on|off | chat on|off | status | target <{Configuration.MinTargetSize}-{Configuration.MaxTargetSize}>]";
 
     public readonly WindowSystem WindowSystem = new("PfNotification");
 
@@ -81,10 +96,12 @@ public sealed class Plugin : IDalamudPlugin
     private readonly CancellationTokenSource lifetime = new();
     private readonly NtfyClient ntfy;
     private readonly DiagnosticLogger diagnostics;
+    private readonly RemoteChatService remoteChat;
 
     private long nextPollAt;
     private long lastAutoSendAt = -AutoSendCooldownMs;
     private long lastFillAt = -FillOverlapMs;
+    private long lastDutyPopAt = -DutyPopDebounceMs;
     private PartySnapshot lastSnapshot;
     private volatile bool disposed;
     private volatile bool testRunning;
@@ -95,9 +112,11 @@ public sealed class Plugin : IDalamudPlugin
     {
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
 
-        ntfy = new NtfyClient($"PfNotification/{PluginInterface.Manifest.AssemblyVersion}");
+        var userAgent = $"PfNotification/{PluginInterface.Manifest.AssemblyVersion}";
+        ntfy = new NtfyClient(userAgent);
         diagnostics = new DiagnosticLogger(ChatGui, Condition, Log);
         diagnostics.SetEnabled(Configuration.DiagnosticLogging);
+        remoteChat = new RemoteChatService(Configuration, userAgent, Log, ChatGui, StartSend);
 
         MainWindow = new MainWindow(this);
         WindowSystem.AddWindow(MainWindow);
@@ -105,8 +124,8 @@ public sealed class Plugin : IDalamudPlugin
         if (!CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
             HelpMessage = $"Open PF Notification. \"{CommandName} test\" sends a test alert, \"on\"/\"off\" toggles alerts, " +
-                          $"\"joins on\"/\"joins off\" toggles join/leave alerts, \"status\" shows the party state, " +
-                          $"\"target 4\" sets the full size.",
+                          $"\"joins on|off\" and \"duty on|off\" toggle join/leave and duty-pop alerts, \"chat on|off\" toggles " +
+                          $"remote party chat, \"status\" shows the party state, \"target 4\" sets the full size.",
         }))
         {
             Log.Warning("Could not register {Command}: another plugin already owns it", CommandName);
@@ -116,6 +135,7 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenConfigUi += ToggleMainUi;
         PluginInterface.UiBuilder.OpenMainUi += ToggleMainUi;
 
+        ClientState.CfPop += OnCfPop;
         Framework.Update += OnFrameworkUpdate;
     }
 
@@ -127,12 +147,19 @@ public sealed class Plugin : IDalamudPlugin
 
     public bool IsTestRunning => testRunning;
 
+    public SubscriberStatus? RemoteChatStatus => remoteChat.Status;
+
+    public string? RemoteChatTopic => remoteChat.ActiveTopic;
+
+    public RemoteChatReport? LastRemoteChat => remoteChat.LastReport;
+
     private MainWindow MainWindow { get; init; }
 
     public void Dispose()
     {
         disposed = true;
         Framework.Update -= OnFrameworkUpdate;
+        ClientState.CfPop -= OnCfPop;
         lifetime.Cancel();
 
         PluginInterface.UiBuilder.Draw -= WindowSystem.Draw;
@@ -144,6 +171,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.RemoveHandler(CommandName);
 
+        remoteChat.Dispose();
         diagnostics.Dispose();
         ntfy.Dispose();
         lifetime.Dispose();
@@ -199,6 +227,15 @@ public sealed class Plugin : IDalamudPlugin
         _ => "solo",
     };
 
+    public static string Describe(SendKind kind) => kind switch
+    {
+        SendKind.Test => "Test notification",
+        SendKind.Full => "Party-full alert",
+        SendKind.DutyPop => "Duty-ready alert",
+        SendKind.ChatFeedback => "Remote chat confirmation",
+        _ => "Join/leave alert",
+    };
+
     private void OnFrameworkUpdate(IFramework framework)
     {
         var now = Environment.TickCount64;
@@ -240,6 +277,50 @@ public sealed class Plugin : IDalamudPlugin
         {
             OnMembersChanged(now, changes, snapshot, target);
         }
+
+        remoteChat.Tick(now, loggedIn, Condition.Any(ZoningFlags), snapshot.Count);
+    }
+
+    /// <summary>Dalamud raises this from a background task, so only copy the name here and decide on the framework thread.</summary>
+    private void OnCfPop(ContentFinderCondition duty)
+    {
+        string name;
+        try
+        {
+            name = AlertText.DutyName(duty.Name.ExtractText());
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Could not read the duty name; treating the pop as a roulette");
+            name = AlertText.RouletteName;
+        }
+
+        _ = Framework.RunOnFrameworkThread(() => HandleDutyPop(name));
+    }
+
+    private void HandleDutyPop(string name)
+    {
+        if (disposed)
+        {
+            return;
+        }
+
+        var now = Environment.TickCount64;
+        if ((now - lastDutyPopAt) < DutyPopDebounceMs)
+        {
+            Log.Debug("Duty pop ({Name}) within {Seconds} s of the last; skipped", name, DutyPopDebounceMs / 1000);
+            return;
+        }
+
+        lastDutyPopAt = now;
+        if (!Configuration.Enabled || !Configuration.DutyPopAlerts)
+        {
+            Log.Information("Duty ready ({Name}); duty-pop alerts are off", name);
+            return;
+        }
+
+        Log.Information("Duty ready ({Name}); sending alert", name);
+        StartSend(new NtfyMessage(AlertText.DutyTitle, AlertText.DutyBody(name), Configuration.DutyPopPriority, DutyTags), SendKind.DutyPop);
     }
 
     private void OnMembersChanged(long now, MemberChanges changes, PartySnapshot snapshot, int target)
@@ -335,17 +416,10 @@ public sealed class Plugin : IDalamudPlugin
         });
     }
 
-    public static string Describe(SendKind kind) => kind switch
-    {
-        SendKind.Test => "Test notification",
-        SendKind.Full => "Party-full alert",
-        _ => "Join/leave alert",
-    };
-
     private void ReportResult(NtfyResult result, SendKind kind)
     {
-        // Join/leave alerts can come in bursts while recruiting; only interrupt the player when one fails.
-        if (disposed || (result.Ok && (kind == SendKind.Change)))
+        // Join/leave alerts and chat confirmations can come in bursts; only interrupt the player when one fails.
+        if (disposed || (result.Ok && (kind is SendKind.Change or SendKind.ChatFeedback)))
         {
             return;
         }
@@ -374,6 +448,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         var parts = args.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var sub = (parts.Length == 0) ? string.Empty : parts[0].ToLowerInvariant();
+        var arg = (parts.Length == 2) ? parts[1].ToLowerInvariant() : string.Empty;
         switch (sub)
         {
             case "":
@@ -396,11 +471,11 @@ public sealed class Plugin : IDalamudPlugin
                 ChatGui.Print($"Alerts {sub}.", ChatTag);
                 return;
             case "joins":
-                if ((parts.Length == 2) && (parts[1].ToLowerInvariant() is "on" or "off"))
+                if (arg is "on" or "off")
                 {
-                    Configuration.JoinLeaveAlerts = parts[1].Equals("on", StringComparison.OrdinalIgnoreCase);
+                    Configuration.JoinLeaveAlerts = arg == "on";
                     Configuration.Save();
-                    ChatGui.Print($"Join/leave alerts {(Configuration.JoinLeaveAlerts ? "on" : "off")}.", ChatTag);
+                    ChatGui.Print($"Join/leave alerts {arg}.", ChatTag);
                 }
                 else
                 {
@@ -408,12 +483,27 @@ public sealed class Plugin : IDalamudPlugin
                 }
 
                 return;
+            case "duty":
+                if (arg is "on" or "off")
+                {
+                    Configuration.DutyPopAlerts = arg == "on";
+                    Configuration.Save();
+                    ChatGui.Print($"Duty-pop alerts {arg}.", ChatTag);
+                }
+                else
+                {
+                    ChatGui.PrintError(Usage, ChatTag);
+                }
+
+                return;
+            case "chat":
+                SetRemoteChat(arg);
+                return;
             case "status":
                 ChatGui.Print(DescribeStatus(), ChatTag);
                 return;
             case "target":
-                if ((parts.Length == 2) && int.TryParse(parts[1], out var size)
-                    && (size >= Configuration.MinTargetSize) && (size <= Configuration.MaxTargetSize))
+                if (int.TryParse(arg, out var size) && (size >= Configuration.MinTargetSize) && (size <= Configuration.MaxTargetSize))
                 {
                     Configuration.TargetSize = size;
                     Configuration.Save();
@@ -431,16 +521,44 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
+    private void SetRemoteChat(string arg)
+    {
+        switch (arg)
+        {
+            case "on":
+                if (Configuration.GetRemoteChatProblem() is { } problem)
+                {
+                    ChatGui.PrintError($"Remote chat can't start: {problem}. Open {CommandName} to fix it.", ChatTag);
+                    return;
+                }
+
+                Configuration.RemoteChatEnabled = true;
+                Configuration.Save();
+                ChatGui.Print($"Remote chat on: messages published to {Configuration.GetRemoteChatTopic()} will be posted to party chat as /p.", ChatTag);
+                return;
+            case "off":
+                Configuration.RemoteChatEnabled = false;
+                Configuration.Save();
+                ChatGui.Print("Remote chat off.", ChatTag);
+                return;
+            default:
+                ChatGui.PrintError(Usage, ChatTag);
+                return;
+        }
+    }
+
     private string DescribeStatus()
     {
         var alerts = Configuration.Enabled ? (Configuration.JoinLeaveAlerts ? "on (with joins/leaves)" : "on (party full only)") : "off";
+        var duty = Configuration.DutyPopAlerts ? "on" : "off";
+        var chat = Configuration.RemoteChatEnabled ? RemoteChatService.Describe(remoteChat.Status) : "off";
         var problem = Configuration.GetConfigProblem();
         var setup = (problem is null) ? string.Empty : $" Not configured: {problem}.";
         if (status is not { } s)
         {
-            return $"Alerts {alerts}; waiting for the game.{setup}";
+            return $"Alerts {alerts}; duty pops {duty}; remote chat {chat}; waiting for the game.{setup}";
         }
 
-        return $"Alerts {alerts}; party {s.Party.Count}/{s.Target} ({DescribeSource(s.Party)}); {DescribeState(s.State)}.{setup}";
+        return $"Alerts {alerts}; duty pops {duty}; remote chat {chat}; party {s.Party.Count}/{s.Target} ({DescribeSource(s.Party)}); {DescribeState(s.State)}.{setup}";
     }
 }

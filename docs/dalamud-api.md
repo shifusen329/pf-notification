@@ -22,9 +22,15 @@ The plugin must be invisible to Square Enix's servers: it observes state the cli
 
 **Not allowed:**
 * Packet-level hooks on the game's network functions. They're unnecessary, because everything above is the client's already-decoded state, and opcodes change every patch.
-* Anything that makes the client contact the server: sending chat text or game commands (`ICommandManager.ProcessCommand` with a game command), opening or refreshing the Party Finder, interacting with agents or addons, or calling FFXIVClientStructs functions that request data or change client state. `InfoProxyCrossRealm` has `RequestData()`, `EndRequest()`, `AddData()`, `ClearListData()` and `HandleZoneInitPacket()`. Read its fields; never call those.
+* Anything that makes the client contact the server: sending chat text or game commands (`ICommandManager.ProcessCommand` with a game command), opening or refreshing the Party Finder, interacting with agents or addons, or calling FFXIVClientStructs functions that request data or change client state. `InfoProxyCrossRealm` has `RequestData()`, `EndRequest()`, `AddData()`, `ClearListData()` and `HandleZoneInitPacket()`. Read its fields; never call those. The one agreed exception, remote party chat, is described below.
 * `ILogMessage.FormatLogMessageForDebugging()`. Its docs warn: "This can cause side effects such as playing sound effects and thus should only be used for debugging." Log `LogMessageId`, the raw sheet text (`GameData.Value.Text`) and the int parameters instead.
 * Automating any player action.
+
+**The one exception: remote party chat (opt-in, off by default).** Decided 2026-10-20. When the player turns it on, `RemoteChat/ChatSender.cs` calls `UIModule.ProcessChatBoxEntry` with a line the client then sends to the server as ordinary party chat, exactly as if typed. The trade-off is understood: a message the player typed on their phone is indistinguishable from one typed at the keyboard, which is nothing like automation, but the plugin is no longer strictly passive while the feature is on. What keeps it bounded:
+* `ChatSender` is the only file allowed to call `ProcessChatBoxEntry`, or any other function that makes the client send something, and only on the framework thread.
+* The line is always `/p ` plus text that `RemoteChat/RemoteChatPolicy.cs` accepted: no commands, one line, at most 500 bytes, rate-limited (one per 2 s, 10 per minute), fresh (at most 60 s old and published after the feature was enabled), only while logged in and in a party.
+* The text is sanitised with `Utf8String.SanitizeString` first and refused if that changed it, the way ECommons' `Chat.SendMessage` does.
+* Nothing else changes: detection, alerts and the ntfy stream itself (`Ntfy/NtfySubscriber.cs`, an outbound HTTPS request to our own server) stay read-only.
 
 Passive behaviour removes the server-visible signals, not the risk entirely: Dalamud runs inside the game process, and third-party tools are against the game's terms regardless of what they do.
 
@@ -171,7 +177,7 @@ Delegate: [`PartyFinderListingEventDelegate`](https://dalamud.dev/api/Dalamud.Pl
 * Events: `event Action Login` ("fires when a character is logging in, and the local character object is available"), `event IClientState.LogoutDelegate Logout` (delegate [`void (int type, int code)`](https://dalamud.dev/api/Dalamud.Plugin.Services/Delegates/IClientState.LogoutDelegate)), `event Action<uint> TerritoryChanged`, `event Action<ContentFinderCondition> CfPop`, `ZoneInit`, `MapIdChanged`, `InstanceChanged`, `EnterPvP` / `LeavePvP`, `ClassJobChanged`, `LevelChanged`.
 * Properties: `bool IsLoggedIn`, `uint TerritoryType`, `uint MapId`, `uint Instance`, `ClientLanguage ClientLanguage`, `IsPvP`, `IsGPosing`.
 * Methods: `IsClientIdle()` / `IsClientIdle(out ConditionFlag)`.
-* Use it to reset the "already notified" state on `Logout`. `CfPop` ("fired when a duty is ready") isn't a PF signal, but it's a useful neighbouring event.
+* Use it to reset the "already notified" state on `Logout`. `CfPop` (`event Action<ContentFinderCondition>`, "fired when a duty is ready") drives the duty-ready alert. It is passive, Dalamud's own hook on the ContentsFinder packet the client already received, but Dalamud raises it from a `Task.Run`, not the framework thread: copy the duty name and marshal with `RunOnFrameworkThread` before touching anything else. For roulettes the row's `Name` is empty; the plugin shows "Duty Roulette", as Dalamud's own chat line does. Each re-pop after a decline raises it again.
 
 **[`IPlayerState`](https://dalamud.dev/api/Dalamud.Plugin.Services/Interfaces/IPlayerState)** in `Dalamud.Plugin.Services`. Injected with `[PluginService]` (already in the template). `bool IsLoaded`, `ulong ContentId`, `string CharacterName`, `uint EntityId`, `RowRef<World> HomeWorld` / `CurrentWorld`. Use `ContentId` to recognise your own PF listing or party member entry.
 
@@ -266,6 +272,7 @@ Handler: [`IReadOnlyCommandInfo.HandlerDelegate`](https://dalamud.dev/api/Dalamu
 Dalamud provides **no HTTP client service**. The [v9 notes](https://dalamud.dev/versions/v9/) say: "`Util.HttpClient` has been removed in favor of allowing plugins to manage their own HTTP lifecycles. You can use `Dalamud.Networking.Http.HappyEyeballsCallback` as your `SocketsHttpHandler.ConnectCallback` to enable improved IPv6 connection handling to dual-stack servers."
 
 * Use plain **`System.Net.Http.HttpClient`**. Create one per plugin with a `Timeout` set, add the `Authorization: Bearer`, `Title` and `Priority` headers per request, and dispose it in `Plugin.Dispose()`.
+* The remote-chat subscriber (`Ntfy/NtfySubscriber.cs`) holds `GET {server}/{topic}/json` open with `HttpCompletionOption.ResponseHeadersRead` and an infinite `HttpClient.Timeout`: a stream never completes, so idle detection is per line (90 s; ntfy keeps alive every 45 s). It reconnects with backoff and asks for `since=<unix time>` bounded to the last 60 s; the policy drops duplicates and stale messages.
 * Optional: [`HappyEyeballsCallback`](https://dalamud.dev/api/Dalamud.Networking.Http/Classes/HappyEyeballsCallback) (`Dalamud.Networking.Http`, implements `IDisposable`). It has `ValueTask<Stream> ConnectCallback(SocketsHttpConnectionContext context, CancellationToken token)`, which you assign to `SocketsHttpHandler.ConnectCallback`. No constructor is shown in the docs; a parameterless one is **(unverified)**. Dispose it with the handler. It only matters if the ntfy host is dual-stack and IPv6 is flaky. Plain `HttpClient` works without it.
 
 ---

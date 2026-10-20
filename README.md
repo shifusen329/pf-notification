@@ -3,7 +3,7 @@
 Get a notification on your phone when your FINAL FANTASY XIV Party Finder party fills, so you can step away from the PC while recruiting.
 
 > **Status:**
-> - **Plugin:** 0.0.1 (alpha), unit-tested, not yet verified in-game. Installable from the Raid Replay plugin repository.
+> - **Plugin:** 0.1.0 (alpha), unit-tested, not yet verified in-game. Installable from the Raid Replay plugin repository.
 > - **ntfy server:** live.
 > - **Mobile app:** planned.
 >
@@ -15,20 +15,20 @@ Get a notification on your phone when your FINAL FANTASY XIV Party Finder party 
 FFXIV + Dalamud plugin ──HTTPS POST──▶ nginx (TLS) ──▶ ntfy (self-hosted) ──▶ phone
 ```
 
-1. The Dalamud plugin watches your party. When it fills, it sends one HTTPS POST to your topic on a self-hosted [ntfy](https://ntfy.sh) server, e.g. "Party full: 8/8: 2 tanks, 2 healers, 4 DPS". It can also report members joining and leaving, e.g. "WHM joined: 5/8: 1 tank, 1 healer, 3 DPS".
+1. The Dalamud plugin watches your party. When it fills, it sends one HTTPS POST to your topic on a self-hosted [ntfy](https://ntfy.sh) server, e.g. "Party full: 8/8: 2 tanks, 2 healers, 4 DPS". It can also report members joining and leaving, e.g. "WHM joined: 5/8: 1 tank, 1 healer, 3 DPS", and a Duty Finder queue or roulette popping, e.g. "Duty ready: Sastasha: accept within 45 s".
 2. ntfy forwards the message to every phone subscribed to that topic.
 3. The phone receives it through the ntfy Android app. A Swift companion app for iOS and Android is planned in [docs/mobile-app.md](docs/mobile-app.md).
 
 No Firebase or other Google push service is involved. With a self-hosted server, the ntfy Android app keeps its own connection open instead.
 
-The plugin is **read-only**. It observes your own client's party data and never sends anything to the game servers: no packets, no game commands, no Party Finder refreshes. See the passive-only rule in [docs/dalamud-api.md](docs/dalamud-api.md).
+The plugin is **passive by default**. It observes your own client's party data and never sends anything to the game servers: no packets, no game commands, no Party Finder refreshes. The one exception is [remote party chat](#remote-party-chat), which is off unless you turn it on: with it on, messages you publish from your phone are posted to party chat by your client, exactly as if you had typed them. See the passive-only rule in [docs/dalamud-api.md](docs/dalamud-api.md).
 
 ## Repository layout
 
 | Path | Contents |
 |---|---|
 | `PfNotification/` | Dalamud plugin (C#, .NET 10, Dalamud API 15). |
-| `tests/PfNotification.Tests/` | xUnit tests for the fill detector, the member tracker, the ntfy client and the alert text. |
+| `tests/PfNotification.Tests/` | xUnit tests for the fill detector, the member tracker, the ntfy client and stream subscriber, the remote chat policy and the alert text. |
 | `CHANGE_LOG.md` | Changes in each release. |
 | `tools/publish.ps1` | Unused alternative: publishes to a self-hosted plugin repository. |
 | `android/` | Kotlin template, to be replaced by a Swift/Skip app in `mobile/` (see [docs/mobile-app.md](docs/mobile-app.md)). |
@@ -54,6 +54,8 @@ The plugin is **read-only**. It observes your own client's party data and never 
   * A join counts after the member has been in the party for 2 seconds, and a leave after they've been gone for 5.
   * Nothing is sent inside duties, or when you join or leave a party yourself.
   * The member who completes the party is announced by the party-full alert instead.
+* **Duty-ready alerts** (on by default): when a Duty Finder queue or roulette pops, "Duty ready" with the duty's name (roulettes show as "Duty Roulette"), at priority 5 so it gets through Do Not Disturb. A re-pop after someone declines alerts again; a second pop within 10 seconds is ignored.
+* **Remote party chat** (off by default): messages you publish from your phone are posted to party chat. See [Remote party chat](#remote-party-chat).
 * **Limits.** Field operations (Eureka, Bozja, Occult Crescent) count as being in a duty, so recruiting there doesn't alert. Alliance (24-player) listings aren't supported.
 
 ### Commands
@@ -64,6 +66,8 @@ The plugin is **read-only**. It observes your own client's party data and never 
 | `/pfnotify test` | Send a test notification. |
 | `/pfnotify on` / `off` | Turn alerts on or off. Detection keeps running either way. |
 | `/pfnotify joins on` / `joins off` | Turn join and leave alerts on or off. |
+| `/pfnotify duty on` / `duty off` | Turn duty-ready alerts on or off. |
+| `/pfnotify chat on` / `chat off` | Turn remote party chat on or off. |
 | `/pfnotify status` | Print the party size and detector state to your chat log. |
 | `/pfnotify target <2-8>` | Set the size that counts as full. |
 
@@ -71,10 +75,31 @@ The settings are:
 * the ntfy server URL, your topic and access token
 * the party-full priority
 * join and leave alerts, and their priority
+* duty-ready alerts, and their priority
 * the target size
 * chat confirmation and diagnostic logging
+* remote party chat, and its topic
 
 In-game, join and leave alerts only report failures, so a busy listing doesn't flood your chat. The token is stored unencrypted in the plugin's config file.
+
+### Remote party chat
+
+Off by default. When on, the plugin keeps a connection to a second ntfy topic, your **chat topic** (the alerts topic plus `-chat`, e.g. `pf-alerts-chat`, unless you set another), and posts each message published there to party chat as `/p <text>`. This is the one thing the plugin does that reaches the game server, and it does it exactly as if you had typed the line: the server sees an ordinary chat message. Anyone who can publish to the chat topic can speak as you, so keep that topic to your own account.
+
+**Guards.** One line only; nothing starting with `/`; 500 bytes at most; at most one message every 2 seconds and 10 a minute (extra ones wait); only while logged in and in a party (while zoning they wait). Messages older than 60 seconds, or published before the feature was turned on, are dropped, so nothing typed while the game was closed is ever posted. Placeholders such as `<flag>` are allowed. Text the game's own filter would change (some emoji and symbols) is refused rather than sent altered.
+
+**Feedback.** Every message gets a reply on your alerts topic: "Sent to party" with the text, or "Not sent to party" with the reason. In game, the posted line shows in party chat as usual, and rejections are printed in red.
+
+**Setup.**
+
+1. On the Docker host, let your plugin token read the chat topic (see [ntfy server](#ntfy-server)):
+
+   ```bash
+   docker exec ntfy ntfy access pf-plugin pf-alerts-chat ro
+   ```
+
+2. In `/pfnotify`, tick **Enable remote party chat**, or run `/pfnotify chat on`. The window shows the stream state: connected, reconnecting, or why it stopped.
+3. To send from your phone, open `https://ntfy.shifusenproductions.com` in the browser, log in, open the `pf-alerts-chat` topic and type in the box at the bottom. The official ntfy Android app can't compose messages; the planned companion app will ([docs/mobile-app.md](docs/mobile-app.md)).
 
 ### Prerequisites
 
@@ -140,13 +165,13 @@ ntfy runs on the home Docker host behind the nginx reverse proxy at `https://ntf
 * `docs/ntfy/` goes to `~/ntfy` on the Docker host and is started with `docker compose up -d`. It listens on port 8090.
 * `docs/ntfy.conf` goes in nginx's `sites-available` on the reverse proxy, with HTTPS from Certbot.
 
-Nothing on the server is readable or writable without an account or token. Each person gets their own topic:
+Nothing on the server is readable or writable without an account or token. Each person gets their own topics: `pf-<name>` for alerts and, for remote party chat, `pf-<name>-chat`:
 
 | Account | Access | Used by |
 |---|---|---|
 | `administrator` | Admin: read and write on all topics | Your phone and the web app |
-| `pf-plugin` | Write-only on `pf-alerts`, via access token | Your plugin |
-| `<mate>` | Read and write on `pf-<mate>` | That mate's phone, and their plugin via a token |
+| `pf-plugin` | Write-only on `pf-alerts`, read-only on `pf-alerts-chat`, via access token | Your plugin |
+| `<mate>` | Read and write on `pf-<mate>` and `pf-<mate>-chat` | That mate's phone, and their plugin via a token |
 
 Keep tokens out of this repo; the plugin stores its token in its Dalamud configuration.
 
@@ -157,10 +182,11 @@ On the Docker host:
 ```bash
 docker exec -it ntfy ntfy user add <mate>                          # choose a password; the mate logs into the app with it
 docker exec ntfy ntfy access <mate> pf-<mate> rw
+docker exec ntfy ntfy access <mate> pf-<mate>-chat rw              # only needed for remote party chat
 docker exec ntfy ntfy token add --label PfNotification <mate>      # prints tk_..., for their plugin
 ```
 
-Send them the password and token privately. They install the ntfy app from Google Play or F-Droid, add the server `https://ntfy.shifusenproductions.com` (not the default ntfy.sh), log in, and subscribe to `pf-<mate>`. In the plugin, they set the topic to `pf-<mate>` and paste the token.
+Send them the password and token privately. They install the ntfy app from Google Play or F-Droid, add the server `https://ntfy.shifusenproductions.com` (not the default ntfy.sh), log in, and subscribe to `pf-<mate>`. In the plugin, they set the topic to `pf-<mate>` and paste the token. For remote party chat they tick it in `/pfnotify` and send from the web app, as in [Remote party chat](#remote-party-chat).
 
 iPhone users can't get timely alerts yet. The server deliberately doesn't forward to ntfy.sh, and without that the official ntfy iOS app only receives messages after a delay of up to hours. iOS support arrives with the Swift app and its APNs relay ([docs/mobile-app.md](docs/mobile-app.md)).
 

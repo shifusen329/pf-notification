@@ -8,6 +8,7 @@
 - [ ] Check `https://ntfy.shifusenproductions.com/v1/health` from outside the LAN (phone on mobile data)
 - [x] First release, 0.0.1: a GitHub release, listed in raid-replay's `repo.json`
 - [ ] Decide whether to keep the self-hosted plugin repository alternative (`docs/plugins.conf`, `tools/publish.ps1`); releases now go through GitHub
+- [ ] Remote party chat: let the plugin token read the chat topic, `docker exec ntfy ntfy access pf-plugin pf-alerts-chat ro` (mates: `ntfy access <mate> pf-<mate>-chat rw`)
 - [ ] Optional hardening: let only the reverse proxy reach ntfy's port 8090 on .113. Docker bypasses ufw, so this needs a `DOCKER-USER` rule. Today any LAN client can call ntfy directly over HTTP; access control still applies, but such a client can spoof `X-Forwarded-For` to dodge rate limits.
 
 ## Phone
@@ -17,7 +18,7 @@
 
 ## Dalamud plugin
 
-Everything here must follow the passive-only rule in `docs/dalamud-api.md`: observe client state, never send anything to the game server.
+Everything here must follow the passive-only rule in `docs/dalamud-api.md`: observe client state, never send anything to the game server. The one agreed exception is remote party chat (opt-in), confined to `RemoteChat/ChatSender.cs`.
 
 - [x] Rename `SamplePlugin` to `PfNotification` and fill in the manifest properties
 - [x] Replace the template's `/pmycommand`, sample windows and goat image with `/pfnotify` and one status/settings window
@@ -37,6 +38,15 @@ Everything here must follow the passive-only rule in `docs/dalamud-api.md`: obse
   - join and leave alerts while hosting (one per member, none in duties, none when you join someone's party, no duplicate when the last member fills the party)
 - [ ] From the diagnostic log, confirm the cross-realm count includes you and the `ClassJob.Role` values (1 tank, 2/3 DPS, 4 healer)
 - [ ] Record the "recruitment complete" `LogMessageId`, then add it as a second trigger, de-duplicated with the same latch
+- [x] Duty-ready alert from `IClientState.CfPop`, with `/pfnotify duty on|off`
+- [x] Remote party chat (opt-in): ntfy stream subscriber, policy guards, `ChatSender`, feedback to the phone, `/pfnotify chat on|off`, unit tests for the subscriber and the policy
+- [ ] In-game verification of 0.1.0:
+  - duty-ready alert for a Duty Finder queue and for a roulette (name fallback), and a re-pop after a decline
+  - remote chat: a message from the ntfy web app reaches a same-world party and a cross-world Party Finder party as `/p`
+  - remote chat rejections (not in a party, `/` prefix, over 500 bytes, published while the plugin was unloaded) show in chat and on the phone
+  - a message published during a zone change waits, then goes out; two messages 1 s apart both go out
+  - Wi-Fi off for 2 minutes shows Reconnecting then Connected; a message published 20 s before the reconnect arrives once
+  - revoking the token's access to the chat topic shows "token rejected" without a retry storm in `/xllog`
 
 ## Mobile app (Swift + Skip, on the Mac)
 
@@ -47,6 +57,7 @@ Plan: [docs/mobile-app.md](docs/mobile-app.md). One SwiftUI codebase for iOS and
 - [ ] Scaffold `mobile/` with `skip init` (app ID `com.shifusen.pfnotification`): setup screen, alerts list, ntfy client
 - [ ] Android delivery: foreground service on the ntfy JSON stream, boot restart, catch-up with `since=`
 - [ ] iOS delivery: the `pf-relay` service (Vapor + APNSwift) on .113, the `pf-relay` ntfy account, `push.shifusenproductions.com` (DNS, `docs/push.conf`, Certbot), APNs registration in the app
+- [ ] Compose box that publishes to `pf-<name>-chat` for remote party chat (until then, the ntfy web app's message box works)
 - [ ] Distribution: TestFlight for iOS, a signed APK for Android
 - [ ] Delete the Kotlin template in `android/` once `mobile/` builds for Android
 

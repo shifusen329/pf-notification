@@ -21,4 +21,21 @@ public sealed class AlertTextTests
     {
         Assert.Equal("5/8: 1 tank, 1 healer, 3 DPS", AlertText.Summary(5, 8, new RoleCounts(1, 1, 3, 0)));
     }
+
+    [Theory]
+    [InlineData(null, "Duty Roulette")]
+    [InlineData("", "Duty Roulette")]
+    [InlineData("   ", "Duty Roulette")]
+    [InlineData("  Sastasha ", "Sastasha")]
+    public void DutyNameFallsBackToRoulette(string? raw, string expected)
+    {
+        Assert.Equal(expected, AlertText.DutyName(raw));
+    }
+
+    [Fact]
+    public void DutyBodyNamesTheDutyAndTheAcceptWindow()
+    {
+        Assert.Equal("Duty ready", AlertText.DutyTitle);
+        Assert.Equal("Sastasha: accept within 45 s", AlertText.DutyBody("Sastasha"));
+    }
 }

@@ -16,6 +16,8 @@
     <Compile Include="..\..\PfNotification\Detection\MemberTracker.cs" Link="Linked\MemberTracker.cs" />
     <Compile Include="..\..\PfNotification\Party\AlertText.cs" Link="Linked\AlertText.cs" />
     <Compile Include="..\..\PfNotification\Ntfy\NtfyClient.cs" Link="Linked\NtfyClient.cs" />
+    <Compile Include="..\..\PfNotification\Ntfy\NtfySubscriber.cs" Link="Linked\NtfySubscriber.cs" />
+    <Compile Include="..\..\PfNotification\RemoteChat\RemoteChatPolicy.cs" Link="Linked\RemoteChatPolicy.cs" />
     <Compile Include="..\..\PfNotification\Party\RoleCounts.cs" Link="Linked\RoleCounts.cs" />
   </ItemGroup>
 
